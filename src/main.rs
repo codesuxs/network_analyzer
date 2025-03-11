@@ -1,43 +1,45 @@
-use pnet::datalink::{self};
+use pnet::datalink::{self, NetworkInterface};
 use std::env;
 use std::thread;
-
 pub mod parse;
 
 fn main() {
-    // Get a list of all network interfaces
+    let interface_name = env::args().nth(1).unwrap();
+    let interface_names_match = |iface: &NetworkInterface| iface.name == interface_name;
+
+    // Find the network interface with the provided name
     let interfaces = datalink::interfaces();
-
-    // Parse command line arguments
-    let interface_name = match env::args().nth(1) {
-        Some(n) => n,
-        None => {
-            eprintln!("USAGE: cargo run --release -- <INTERFACE_NAME>");
-            eprintln!("Available interfaces:");
-            for interface in interfaces.iter() {
-                eprintln!("- {}: {:?}", interface.name, interface.mac);
-            }
-            return;
-        }
-    };
-
-    // Find the specified interface
     let interface = interfaces
         .into_iter()
-        .filter(|iface| iface.name == interface_name)
+        .filter(interface_names_match)
         .next()
-        .expect("Could not find specified interface");
+        .unwrap();
 
-    // Create a new channel to receive packets from the interface
+    // Create a new channel, dealing with layer 2 packets
     let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
         Ok(datalink::Channel::Ethernet(tx, rx)) => (tx, rx),
         Ok(_) => panic!("Unhandled channel type"),
-        Err(e) => panic!("Error creating datalink channel: {}", e),
+        Err(e) => panic!(
+            "An error occurred when creating the datalink channel: {}",
+            e
+        ),
     };
 
-    println!("Listening on interface: {}", interface_name);
+    loop {
+        match rx.next() {
+            Ok(packet) => {
+                let packet_info = parse::parse_packet(packet);
 
-    thread::spawn(move || {
+                // Only process packets that match our filter
+                println!("Received packet: {:?}", packet_info);
+            }
+            Err(e) => {
+                eprintln!("Error receiving packet: {}", e);
+                break;
+            }
+        }
+    }
+    let parser = thread::spawn(move || {
         loop {
             match rx.next() {
                 Ok(packet) => {
@@ -53,4 +55,5 @@ fn main() {
             }
         }
     });
+    parser.join().unwrap();
 }
